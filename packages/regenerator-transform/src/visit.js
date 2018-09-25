@@ -10,8 +10,12 @@
 import assert from "assert";
 import { hoist } from "./hoist";
 import { Emitter } from "./emit";
+import { addDefault } from "@babel/helper-module-imports";
 import replaceShorthandObjectMethod from "./replaceShorthandObjectMethod";
 import * as util from "./util";
+
+const runtimeNames = new WeakMap();
+let runtimeId;
 
 exports.getVisitor = ({ types: t }) => ({
   Function: {
@@ -32,6 +36,25 @@ exports.getVisitor = ({ types: t }) => ({
       } else {
         // Not a generator or async function.
         return;
+      }
+
+
+      if (state.opts.importRuntime) {
+        // Runtime import needed
+        const programPath = path.scope.getProgramParent().path;
+
+        if (runtimeNames.has(programPath.node)) {
+          runtimeId = t.identifier(runtimeNames.get(programPath.node));
+        } else {
+          runtimeId = addDefault(programPath, "regenerator-runtime", {
+            nameHint: "regeneratorRuntime",
+            importedInterop: "uncompiled",
+            blockHoist: 3
+          });
+          runtimeNames.set(programPath.node, runtimeId.name);
+        }
+      } else {
+        runtimeId = t.identifier("regeneratorRuntime");
       }
 
       // if this is an ObjectMethod, we need to convert it to an ObjectProperty
@@ -122,7 +145,7 @@ exports.getVisitor = ({ types: t }) => ({
       }
 
       let wrapCall = t.callExpression(
-        util.runtimeProperty(node.async ? "async" : "wrap", path.scope, state.opts),
+        util.runtimeProperty(runtimeId, node.async ? "async" : "wrap"),
         wrapArgs
       );
 
@@ -147,7 +170,7 @@ exports.getVisitor = ({ types: t }) => ({
 
       if (wasGeneratorFunction && t.isExpression(node)) {
         util.replaceWithOrRemove(path, t.callExpression(
-          util.runtimeProperty("mark", path.scope, state.opts),
+          util.runtimeProperty(runtimeId, "mark"),
           [node]
         ));
         path.addComment("leading", "#__PURE__");
@@ -227,7 +250,7 @@ function getMarkedFunctionId(funPath, opts) {
   // Get a new unique identifier for our marked variable.
   const markedId = blockPath.scope.generateUidIdentifier("marked");
   const markCallExp = t.callExpression(
-    util.runtimeProperty("mark", funPath.scope, opts),
+    util.runtimeProperty(runtimeId, "mark"),
     [t.clone(node.id)]
   );
 
@@ -307,7 +330,7 @@ let awaitVisitor = {
     // can distinguish between awaited and merely yielded values.
     util.replaceWithOrRemove(path, t.yieldExpression(
       t.callExpression(
-        util.runtimeProperty("awrap", path.scope, state.opts),
+        util.runtimeProperty(runtimeId, "awrap"),
         [argument]
       ),
       false
